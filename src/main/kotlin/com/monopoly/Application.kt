@@ -111,19 +111,19 @@ fun Application.module() {
             """.trimIndent())
         }
 
-        // Health check (упрощенный)
+        // Health check
         get("/health") {
             try {
                 val players = PlayerRepository.getAllPlayers()
-                call.respond(mapOf(
+                call.respond(mapOf<String, Any>(
                     "status" to "OK",
                     "players_count" to players.size,
                     "version" to "1.0.0"
                 ))
             } catch (e: Exception) {
-                call.respond(mapOf(
+                call.respond(mapOf<String, Any>(
                     "status" to "ERROR",
-                    "message" to e.message ?: "Unknown error"
+                    "message" to (e.message ?: "Unknown error")
                 ))
             }
         }
@@ -136,7 +136,7 @@ fun Application.module() {
                     val players = PlayerRepository.getAllPlayers()
                     call.respond(players)
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to "Failed to get players: ${e.message}"))
+                    call.respond(mapOf<String, String>("error" to "Failed to get players: ${e.message}"))
                 }
             }
 
@@ -147,19 +147,19 @@ fun Application.module() {
                     val name = request["name"]?.toString() ?: ""
 
                     if (name.isBlank()) {
-                        call.respond(mapOf("error" to "Player name is required"))
+                        call.respond(mapOf<String, String>("error" to "Player name is required"))
                         return@post
                     }
 
                     if (name.length > 100) {
-                        call.respond(mapOf("error" to "Player name too long (max 100 chars)"))
+                        call.respond(mapOf<String, String>("error" to "Player name too long (max 100 chars)"))
                         return@post
                     }
 
                     val player = PlayerRepository.createPlayer(name)
                     call.respond(player)
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to "Failed to create player: ${e.message}"))
+                    call.respond(mapOf<String, String>("error" to "Failed to create player: ${e.message}"))
                 }
             }
 
