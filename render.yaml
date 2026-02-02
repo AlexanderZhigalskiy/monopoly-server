@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: monopoly-api
+    runtime: docker
+    repo: https://github.com/ваш-username/monopoly-server.git
+    branch: main
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+    healthCheckPath: /health
+    autoDeploy: true
