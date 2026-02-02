@@ -19,14 +19,14 @@ dependencies {
     implementation "io.ktor:ktor-serialization-kotlinx-json:2.3.5"
     implementation "io.ktor:ktor-server-cors:2.3.5"
 
-    // Kotlinx Serialization
-    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0"
-
-    // Kotlinx Coroutines (нужен для Mutex)
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3"
+    // PostgreSQL драйвер
+    implementation "org.postgresql:postgresql:42.6.0"
 
     // Logging
     implementation "ch.qos.logback:logback-classic:1.4.11"
+
+    // Kotlinx Serialization
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0"
 }
 
 java {

@@ -11,8 +11,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.plugins.cors.routing.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import java.sql.*
 
 @Serializable
 data class Player(
@@ -21,76 +20,226 @@ data class Player(
     var balance: Int = 1500
 )
 
-class PlayerRepository {
-    private val players = mutableListOf<Player>()
-    private val mutex = Mutex()
-    private var nextId = 1
+class Database {
+    private var connection: Connection? = null
 
-    suspend fun getAllPlayers(): List<Player> = mutex.withLock {
-        players.toList()
+    init {
+        connect()
+        createTable()
     }
 
-    suspend fun createPlayer(name: String): Player = mutex.withLock {
-        val player = Player(id = nextId++, name = name)
-        players.add(player)
-        player
-    }
+    private fun connect() {
+        try {
+            // ВАША СТРОКА ПОДКЛЮЧЕНИЯ ИЗ RENDER
+            val databaseUrl = System.getenv("DATABASE_URL") ?:
+            "postgresql://monopoly_64ir_user:FUK30dgIbnvTORZ5veNriGmIdYTsVb0c@dpg-d60av6juibrs73dcfjdg-a.frankfurt-postgres.render.com/monopoly_64ir"
 
-    suspend fun addMoney(id: Int, amount: Int): Boolean = mutex.withLock {
-        val player = players.find { it.id == id }
-        player?.let {
-            it.balance += amount
-            true
-        } ?: false
-    }
-
-    suspend fun subtractMoney(id: Int, amount: Int): Boolean = mutex.withLock {
-        val player = players.find { it.id == id }
-        player?.let {
-            if (it.balance >= amount) {
-                it.balance -= amount
-                true
+            // Преобразуем для JDBC
+            val jdbcUrl = if (databaseUrl.startsWith("postgresql://")) {
+                databaseUrl.replace("postgresql://", "jdbc:postgresql://") + "?ssl=true&sslmode=require"
             } else {
-                false
+                databaseUrl
             }
-        } ?: false
+
+            println("🔄 Connecting to: $jdbcUrl")
+            Class.forName("org.postgresql.Driver")
+            connection = DriverManager.getConnection(jdbcUrl)
+            println("✅ Connected to PostgreSQL database")
+        } catch (e: Exception) {
+            println("❌ Database connection failed: ${e.message}")
+            e.printStackTrace()
+        }
     }
 
-    suspend fun deletePlayer(id: Int): Boolean = mutex.withLock {
-        players.removeIf { it.id == id }
+    private fun createTable() {
+        val sql = """
+            CREATE TABLE IF NOT EXISTS players (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                balance INTEGER DEFAULT 1500
+            )
+        """
+
+        try {
+            connection?.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute(sql)
+                    println("✅ Players table created/verified")
+                }
+            }
+        } catch (e: Exception) {
+            println("❌ Table creation failed: ${e.message}")
+        }
+    }
+
+    fun getAllPlayers(): List<Player> {
+        val players = mutableListOf<Player>()
+        val sql = "SELECT * FROM players ORDER BY id"
+
+        try {
+            connection?.use { conn ->
+                conn.createStatement().use { stmt ->
+                    val rs = stmt.executeQuery(sql)
+                    while (rs.next()) {
+                        players.add(
+                            Player(
+                                id = rs.getInt("id"),
+                                name = rs.getString("name"),
+                                balance = rs.getInt("balance")
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("❌ Error getting players: ${e.message}")
+        }
+        return players
+    }
+
+    fun createPlayer(name: String): Player? {
+        val sql = "INSERT INTO players (name) VALUES (?) RETURNING id, name, balance"
+
+        return try {
+            connection?.use { conn ->
+                conn.prepareStatement(sql).use { stmt ->
+                    stmt.setString(1, name)
+                    val rs = stmt.executeQuery()
+                    if (rs.next()) {
+                        Player(
+                            id = rs.getInt("id"),
+                            name = rs.getString("name"),
+                            balance = rs.getInt("balance")
+                        )
+                    } else {
+                        null
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("❌ Error creating player: ${e.message}")
+            null
+        }
+    }
+
+    fun addMoney(playerId: Int, amount: Int): Boolean {
+        val sql = "UPDATE players SET balance = balance + ? WHERE id = ? RETURNING balance"
+
+        return try {
+            connection?.use { conn ->
+                conn.prepareStatement(sql).use { stmt ->
+                    stmt.setInt(1, amount)
+                    stmt.setInt(2, playerId)
+                    val rs = stmt.executeQuery()
+                    rs.next()
+                    true
+                }
+            } ?: false
+        } catch (e: Exception) {
+            println("❌ Error adding money: ${e.message}")
+            false
+        }
+    }
+
+    fun subtractMoney(playerId: Int, amount: Int): Boolean {
+        val checkSql = "SELECT balance FROM players WHERE id = ?"
+        val updateSql = "UPDATE players SET balance = balance - ? WHERE id = ? AND balance >= ?"
+
+        return try {
+            connection?.use { conn ->
+                // Проверяем баланс
+                var hasEnough = false
+                conn.prepareStatement(checkSql).use { checkStmt ->
+                    checkStmt.setInt(1, playerId)
+                    val rs = checkStmt.executeQuery()
+                    if (rs.next() && rs.getInt("balance") >= amount) {
+                        hasEnough = true
+                    }
+                }
+
+                if (hasEnough) {
+                    // Снимаем деньги
+                    conn.prepareStatement(updateSql).use { updateStmt ->
+                        updateStmt.setInt(1, amount)
+                        updateStmt.setInt(2, playerId)
+                        updateStmt.setInt(3, amount)
+                        updateStmt.executeUpdate() > 0
+                    }
+                } else {
+                    false
+                }
+            } ?: false
+        } catch (e: Exception) {
+            println("❌ Error subtracting money: ${e.message}")
+            false
+        }
+    }
+
+    fun deletePlayer(playerId: Int): Boolean {
+        val sql = "DELETE FROM players WHERE id = ?"
+
+        return try {
+            connection?.use { conn ->
+                conn.prepareStatement(sql).use { stmt ->
+                    stmt.setInt(1, playerId)
+                    stmt.executeUpdate() > 0
+                }
+            } ?: false
+        } catch (e: Exception) {
+            println("❌ Error deleting player: ${e.message}")
+            false
+        }
     }
 }
 
 fun main() {
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
+    embeddedServer(Netty, port = getPort(), host = "0.0.0.0", module = Application::module)
         .start(wait = true)
 }
 
+fun getPort(): Int {
+    return System.getenv("PORT")?.toIntOrNull() ?: 8080
+}
+
 fun Application.module() {
+    // Настройка JSON сериализации
     install(ContentNegotiation) {
         json(Json {
             prettyPrint = true
+            isLenient = true
         })
     }
 
+    // Настройка CORS
     install(CORS) {
         anyHost()
+        allowHeader("Content-Type")
+        allowMethod(io.ktor.http.HttpMethod.Options)
+        allowMethod(io.ktor.http.HttpMethod.Get)
+        allowMethod(io.ktor.http.HttpMethod.Post)
+        allowMethod(io.ktor.http.HttpMethod.Put)
+        allowMethod(io.ktor.http.HttpMethod.Delete)
     }
 
-    val playerRepository = PlayerRepository()
+    val database = Database()
 
     routing {
         get("/") {
-            call.respondText("Monopoly Money API is running!")
+            call.respondText("Monopoly Money API v1.0")
         }
 
         get("/health") {
-            call.respond(mapOf("status" to "OK"))
+            val players = database.getAllPlayers()
+            call.respond(mapOf(
+                "status" to "OK",
+                "players_count" to players.size,
+                "database" to "connected"
+            ))
         }
 
         route("/players") {
             get {
-                val players = playerRepository.getAllPlayers()
+                val players = database.getAllPlayers()
                 call.respond(players)
             }
 
@@ -104,50 +253,66 @@ fun Application.module() {
                         return@post
                     }
 
-                    val player = playerRepository.createPlayer(name)
-                    call.respond(player)
+                    val player = database.createPlayer(name)
+                    if (player != null) {
+                        call.respond(player)
+                    } else {
+                        call.respond(mapOf("error" to "Failed to create player"))
+                    }
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to "Invalid request"))
+                    call.respond(mapOf("error" to e.message.toString()))
                 }
             }
 
             post("/{id}/add") {
-                val id = call.parameters["id"]?.toIntOrNull()
-                val data = call.receive<Map<String, Int>>()
-                val amount = data["amount"] ?: 0
+                try {
+                    val id = call.parameters["id"]?.toIntOrNull()
+                    val data = call.receive<Map<String, Int>>()
+                    val amount = data["amount"] ?: 0
 
-                if (id == null || amount <= 0) {
-                    call.respond(mapOf("error" to "Invalid request"))
-                    return@post
+                    if (id == null || amount <= 0) {
+                        call.respond(mapOf("error" to "Invalid ID or amount"))
+                        return@post
+                    }
+
+                    val success = database.addMoney(id, amount)
+                    call.respond(mapOf("success" to success))
+                } catch (e: Exception) {
+                    call.respond(mapOf("error" to e.message.toString()))
                 }
-
-                val success = playerRepository.addMoney(id, amount)
-                call.respond(mapOf("success" to success))
             }
 
             post("/{id}/subtract") {
-                val id = call.parameters["id"]?.toIntOrNull()
-                val data = call.receive<Map<String, Int>>()
-                val amount = data["amount"] ?: 0
+                try {
+                    val id = call.parameters["id"]?.toIntOrNull()
+                    val data = call.receive<Map<String, Int>>()
+                    val amount = data["amount"] ?: 0
 
-                if (id == null || amount <= 0) {
-                    call.respond(mapOf("error" to "Invalid request"))
-                    return@post
+                    if (id == null || amount <= 0) {
+                        call.respond(mapOf("error" to "Invalid ID or amount"))
+                        return@post
+                    }
+
+                    val success = database.subtractMoney(id, amount)
+                    call.respond(mapOf("success" to success))
+                } catch (e: Exception) {
+                    call.respond(mapOf("error" to e.message.toString()))
                 }
-
-                val success = playerRepository.subtractMoney(id, amount)
-                call.respond(mapOf("success" to success))
             }
 
             delete("/{id}") {
-                val id = call.parameters["id"]?.toIntOrNull()
-                if (id == null) {
-                    call.respond(mapOf("error" to "Invalid ID"))
-                    return@delete
-                }
+                try {
+                    val id = call.parameters["id"]?.toIntOrNull()
+                    if (id == null) {
+                        call.respond(mapOf("error" to "Invalid ID"))
+                        return@delete
+                    }
 
-                val success = playerRepository.deletePlayer(id)
-                call.respond(mapOf("success" to success))
+                    val success = database.deletePlayer(id)
+                    call.respond(mapOf("success" to success))
+                } catch (e: Exception) {
+                    call.respond(mapOf("error" to e.message.toString()))
+                }
             }
         }
     }
