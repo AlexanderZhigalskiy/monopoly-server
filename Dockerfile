@@ -1,28 +1,28 @@
-# Этап сборки
-FROM gradle:7.6-jdk17-alpine AS builder
+# Используем базовый образ с JDK 17
+FROM eclipse-temurin:17-jdk-focal AS builder
 
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем только нужные для сборки файлы
+# Копируем Gradle wrapper и файлы сборки
 COPY gradlew .
-COPY gradle gradle/
-COPY build.gradle .
+COPY gradle gradle
+COPY build.gradle.kts .
 COPY settings.gradle.kts .
-COPY src src/
+COPY src src
 
 # Даем права и собираем
 RUN chmod +x gradlew
-RUN ./gradlew build -x test --no-daemon
+RUN ./gradlew build --no-daemon
 
 # Этап запуска
-FROM eclipse-temurin:17-jre-alpine
-
+FROM eclipse-temurin:17-jre-focal
 WORKDIR /app
 
-# Копируем собранный JAR
+# Копируем собранный JAR из предыдущего этапа
 COPY --from=builder /app/build/libs/*.jar app.jar
 
-# Открываем порт
+# Экспонируем порт
 EXPOSE 8080
 
 # Запускаем приложение

@@ -16,13 +16,12 @@ import kotlinx.serialization.json.Json
 data class Player(
     val id: Int,
     val name: String,
-    var balance: Int = 0  // Изменено: по умолчанию 0 вместо 1500
+    var balance: Int = 0
 )
 
 @Serializable
 data class PlayerCreateRequest(
     val name: String
-    // Убрал поле balance - баланс всегда 0 при создании
 )
 
 @Serializable
@@ -40,17 +39,17 @@ object Game {
     private val players = mutableListOf<Player>()
     private var nextId = 1
 
-    fun getAllPlayers(): List<Player> = synchronized(players) { players.toList() }
+    fun getAllPlayers(): List<Player> = players.toList()
 
-    fun addPlayer(name: String, initialBalance: Int = 0): Player = synchronized(players) {
-        val newPlayer = Player(id = nextId++, name = name, balance = initialBalance)
+    fun addPlayer(name: String): Player {
+        val newPlayer = Player(id = nextId++, name = name)
         players.add(newPlayer)
-        newPlayer
+        return newPlayer
     }
 
-    fun updateBalance(playerId: Int, delta: Int): Boolean = synchronized(players) {
+    fun updateBalance(playerId: Int, delta: Int): Boolean {
         val player = players.find { it.id == playerId }
-        player?.let {
+        return player?.let {
             if (it.balance + delta >= 0) {
                 it.balance += delta
                 true
@@ -60,9 +59,9 @@ object Game {
         } ?: false
     }
 
-    fun setBalance(playerId: Int, newBalance: Int): Boolean = synchronized(players) {
+    fun setBalance(playerId: Int, newBalance: Int): Boolean {
         val player = players.find { it.id == playerId }
-        player?.let {
+        return player?.let {
             if (newBalance >= 0) {
                 it.balance = newBalance
                 true
@@ -72,15 +71,13 @@ object Game {
         } ?: false
     }
 
-    fun deletePlayer(playerId: Int): Boolean = synchronized(players) {
-        players.removeIf { it.id == playerId }
+    fun deletePlayer(playerId: Int): Boolean {
+        return players.removeIf { it.id == playerId }
     }
-
-    fun getPlayersCount(): Int = synchronized(players) { players.size }
 }
 
 fun main() {
-    embeddedServer(Netty, port = (System.getenv("PORT")?.toIntOrNull() ?: 8080), host = "0.0.0.0") {
+    embeddedServer(Netty, port = 8080, host = "0.0.0.0") {
         install(ContentNegotiation) {
             json(Json {
                 prettyPrint = true
@@ -94,26 +91,16 @@ fun main() {
 
         routing {
             get("/") {
-                call.respondText("Monopoly Money Server is running. Use /players API.")
+                call.respondText("Monopoly Money Server is running")
             }
 
             get("/health") {
-                call.respond(mapOf<String, Any>(
-                    "status" to "OK",
-                    "service" to "monopoly",
-                    "timestamp" to System.currentTimeMillis(),
-                    "version" to "1.0.1"
-                ))
+                call.respond(mapOf("status" to "OK"))
             }
 
             route("/players") {
                 get {
-                    try {
-                        val players = Game.getAllPlayers()
-                        call.respond(players)
-                    } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error getting players: ${e.message}"))
-                    }
+                    call.respond(Game.getAllPlayers())
                 }
 
                 post {
@@ -122,15 +109,14 @@ fun main() {
                         val name = request.name.trim()
 
                         if (name.isEmpty()) {
-                            call.respond(SimpleResponse(false, null, "Player name cannot be empty"))
+                            call.respond(SimpleResponse(false, error = "Player name cannot be empty"))
                             return@post
                         }
 
-                        val newPlayer = Game.addPlayer(name) // Баланс будет 0 по умолчанию
+                        val newPlayer = Game.addPlayer(name)
                         call.respond(newPlayer)
-
                     } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error: ${e.localizedMessage}"))
+                        call.respond(SimpleResponse(false, error = e.message))
                     }
                 }
 
@@ -140,16 +126,15 @@ fun main() {
                         val request = call.receive<MoneyRequest>()
 
                         if (playerId == null || request.amount <= 0) {
-                            call.respond(SimpleResponse(false, null, "Invalid request"))
+                            call.respond(SimpleResponse(false, error = "Invalid request"))
                             return@post
                         }
 
                         val success = Game.updateBalance(playerId, request.amount)
-                        val message = if (success) "Money added" else "Player not found"
-                        call.respond(SimpleResponse(success, message, null))
-
+                        call.respond(SimpleResponse(success,
+                            if (success) "Money added" else "Player not found"))
                     } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error: ${e.localizedMessage}"))
+                        call.respond(SimpleResponse(false, error = e.message))
                     }
                 }
 
@@ -159,19 +144,15 @@ fun main() {
                         val request = call.receive<MoneyRequest>()
 
                         if (playerId == null || request.amount <= 0) {
-                            call.respond(SimpleResponse(false, null, "Invalid request"))
+                            call.respond(SimpleResponse(false, error = "Invalid request"))
                             return@post
                         }
 
                         val success = Game.updateBalance(playerId, -request.amount)
-                        if (success) {
-                            call.respond(SimpleResponse(true, "Money subtracted", null))
-                        } else {
-                            call.respond(SimpleResponse(false, null, "Player not found or insufficient funds"))
-                        }
-
+                        call.respond(SimpleResponse(success,
+                            if (success) "Money subtracted" else "Player not found or insufficient funds"))
                     } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error: ${e.localizedMessage}"))
+                        call.respond(SimpleResponse(false, error = e.message))
                     }
                 }
 
@@ -180,25 +161,16 @@ fun main() {
                         val playerId = call.parameters["id"]?.toIntOrNull()
                         val request = call.receive<MoneyRequest>()
 
-                        if (playerId == null) {
-                            call.respond(SimpleResponse(false, null, "Invalid player ID"))
-                            return@put
-                        }
-
-                        if (request.amount < 0) {
-                            call.respond(SimpleResponse(false, null, "Balance cannot be negative"))
+                        if (playerId == null || request.amount < 0) {
+                            call.respond(SimpleResponse(false, error = "Invalid request"))
                             return@put
                         }
 
                         val success = Game.setBalance(playerId, request.amount)
-                        if (success) {
-                            call.respond(SimpleResponse(true, "Balance updated", null))
-                        } else {
-                            call.respond(SimpleResponse(false, null, "Player not found"))
-                        }
-
+                        call.respond(SimpleResponse(success,
+                            if (success) "Balance updated" else "Player not found"))
                     } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error: ${e.localizedMessage}"))
+                        call.respond(SimpleResponse(false, error = e.message))
                     }
                 }
 
@@ -206,16 +178,15 @@ fun main() {
                     try {
                         val playerId = call.parameters["id"]?.toIntOrNull()
                         if (playerId == null) {
-                            call.respond(SimpleResponse(false, null, "Invalid player ID"))
+                            call.respond(SimpleResponse(false, error = "Invalid player ID"))
                             return@delete
                         }
 
                         val success = Game.deletePlayer(playerId)
-                        val message = if (success) "Player deleted" else "Player not found"
-                        call.respond(SimpleResponse(success, message, null))
-
+                        call.respond(SimpleResponse(success,
+                            if (success) "Player deleted" else "Player not found"))
                     } catch (e: Exception) {
-                        call.respond(SimpleResponse(false, null, "Error: ${e.localizedMessage}"))
+                        call.respond(SimpleResponse(false, error = e.message))
                     }
                 }
             }
