@@ -16,7 +16,13 @@ import kotlinx.serialization.json.Json
 data class Player(
     val id: Int,
     val name: String,
-    var balance: Int = 1500
+    var balance: Int = 0  // Изменено: по умолчанию 0 вместо 1500
+)
+
+@Serializable
+data class PlayerCreateRequest(
+    val name: String
+    // Убрал поле balance - баланс всегда 0 при создании
 )
 
 @Serializable
@@ -26,7 +32,7 @@ data class MoneyRequest(val amount: Int)
 data class SimpleResponse(
     val success: Boolean,
     val message: String? = null,
-    val error: String? = null  // Добавляем поле error для Android
+    val error: String? = null
 )
 
 // Простейшее "хранилище" в оперативной памяти
@@ -36,8 +42,8 @@ object Game {
 
     fun getAllPlayers(): List<Player> = synchronized(players) { players.toList() }
 
-    fun addPlayer(name: String): Player = synchronized(players) {
-        val newPlayer = Player(id = nextId++, name = name)
+    fun addPlayer(name: String, initialBalance: Int = 0): Player = synchronized(players) {
+        val newPlayer = Player(id = nextId++, name = name, balance = initialBalance)
         players.add(newPlayer)
         newPlayer
     }
@@ -112,15 +118,15 @@ fun main() {
 
                 post {
                     try {
-                        val request = call.receive<Map<String, String>>()
-                        val name = request["name"]?.trim()
+                        val request = call.receive<PlayerCreateRequest>()
+                        val name = request.name.trim()
 
-                        if (name.isNullOrEmpty()) {
+                        if (name.isEmpty()) {
                             call.respond(SimpleResponse(false, null, "Player name cannot be empty"))
                             return@post
                         }
 
-                        val newPlayer = Game.addPlayer(name)
+                        val newPlayer = Game.addPlayer(name) // Баланс будет 0 по умолчанию
                         call.respond(newPlayer)
 
                     } catch (e: Exception) {
@@ -169,7 +175,6 @@ fun main() {
                     }
                 }
 
-                // НОВЫЙ ЭНДПОИНТ: прямое обновление баланса
                 put("/{id}/balance") {
                     try {
                         val playerId = call.parameters["id"]?.toIntOrNull()
