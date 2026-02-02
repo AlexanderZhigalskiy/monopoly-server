@@ -2,7 +2,7 @@ services:
   - type: web
     name: monopoly-api
     runtime: docker
-    repo: https://github.com/ваш-username/monopoly-server.git
+    repo: https://github.com/AlexanderZhigalskiy/monopoly-server.git
     branch: main
     plan: free
     envVars:

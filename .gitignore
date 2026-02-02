@@ -1,7 +1,28 @@
-.gradle
+# Gradle
+.gradle/
 build/
+out/
+*.jar
+*.war
+*.zip
+*.tar
+*.rar
+
+# IDE
 .idea/
 *.iml
-out/
+*.ipr
+*.iws
+.vscode/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+logs/
+
+# Other
+target/
+*.class

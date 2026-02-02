@@ -1,11 +1,27 @@
-FROM openjdk:17-jdk-slim
+# Используем официальный образ Java 17
+FROM eclipse-temurin:17-jdk-alpine
 
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем собранный JAR
-COPY build/libs/monopoly-server-1.0.0.jar app.jar
+# Копируем файлы сборки
+COPY gradlew .
+COPY gradle gradle
+COPY build.gradle .
+COPY settings.gradle.kts .
+COPY gradle.properties .
+COPY src src
 
-# Экспортируем порт
+# Даем права на выполнение gradlew
+RUN chmod +x gradlew
+
+# Собираем проект
+RUN ./gradlew build --no-daemon
+
+# Копируем собранный JAR
+RUN cp build/libs/*.jar app.jar
+
+# Открываем порт
 EXPOSE 8080
 
 # Запускаем приложение
