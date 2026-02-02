@@ -11,7 +11,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.plugins.cors.routing.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
 
 @Serializable
 data class Player(
@@ -20,41 +20,49 @@ data class Player(
     var balance: Int = 1500
 )
 
-// ПРОСТОЙ РЕПОЗИТОРИЙ В ПАМЯТИ (для теста)
+@Serializable
+data class MoneyRequest(val amount: Int)
+
+@Serializable
+data class ApiResponse(val success: Boolean, val error: String? = null)
+
 object PlayerRepository {
     private val players = mutableListOf<Player>()
-    private var nextId = 1
+    private val nextId = AtomicInteger(1)
+    private val lock = Any()
 
-    fun getAllPlayers(): List<Player> = players.toList()
-
-    fun createPlayer(name: String): Player {
-        val player = Player(id = nextId++, name = name, balance = 1500)
-        players.add(player)
-        return player
+    fun getAllPlayers(): List<Player> = synchronized(lock) {
+        players.toList()
     }
 
-    fun addMoney(playerId: Int, amount: Int): Boolean {
+    fun createPlayer(name: String): Player = synchronized(lock) {
+        val player = Player(id = nextId.getAndIncrement(), name = name, balance = 1500)
+        players.add(player)
+        player
+    }
+
+    fun addMoney(playerId: Int, amount: Int): Boolean = synchronized(lock) {
         val player = players.find { it.id == playerId }
         player?.let {
             it.balance += amount
-            return true
-        }
-        return false
+            true
+        } ?: false
     }
 
-    fun subtractMoney(playerId: Int, amount: Int): Boolean {
+    fun subtractMoney(playerId: Int, amount: Int): Boolean = synchronized(lock) {
         val player = players.find { it.id == playerId }
         player?.let {
             if (it.balance >= amount) {
                 it.balance -= amount
-                return true
+                true
+            } else {
+                false
             }
-        }
-        return false
+        } ?: false
     }
 
-    fun deletePlayer(playerId: Int): Boolean {
-        return players.removeIf { it.id == playerId }
+    fun deletePlayer(playerId: Int): Boolean = synchronized(lock) {
+        players.removeIf { it.id == playerId }
     }
 }
 
@@ -73,98 +81,148 @@ fun Application.module() {
             prettyPrint = true
             isLenient = true
             ignoreUnknownKeys = true
+            encodeDefaults = true
         })
     }
 
     install(CORS) {
         anyHost()
         allowHeader("Content-Type")
+        allowMethod(io.ktor.http.HttpMethod.Options)
+        allowMethod(io.ktor.http.HttpMethod.Get)
+        allowMethod(io.ktor.http.HttpMethod.Post)
+        allowMethod(io.ktor.http.HttpMethod.Put)
+        allowMethod(io.ktor.http.HttpMethod.Delete)
     }
 
     routing {
+        // Главная страница
         get("/") {
-            call.respondText("Monopoly Money API v1.0 (In-Memory Database)")
+            call.respondText("""
+                Monopoly Money API v1.0
+                
+                Доступные эндпоинты:
+                GET  /health    - Проверка работы
+                GET  /players   - Получить всех игроков
+                POST /players   - Создать нового игрока (тело: {"name": "Имя"})
+                POST /players/{id}/add - Добавить деньги (тело: {"amount": 100})
+                POST /players/{id}/subtract - Снять деньги (тело: {"amount": 100})
+                DELETE /players/{id} - Удалить игрока
+            """.trimIndent())
         }
 
+        // Health check (упрощенный)
         get("/health") {
-            call.respond(mapOf(
-                "status" to "OK",
-                "players" to PlayerRepository.getAllPlayers().size,
-                "database" to "in-memory"
-            ))
+            try {
+                val players = PlayerRepository.getAllPlayers()
+                call.respond(mapOf(
+                    "status" to "OK",
+                    "players_count" to players.size,
+                    "version" to "1.0.0"
+                ))
+            } catch (e: Exception) {
+                call.respond(mapOf(
+                    "status" to "ERROR",
+                    "message" to e.message ?: "Unknown error"
+                ))
+            }
         }
 
+        // API для игроков
         route("/players") {
+            // Получить всех игроков
             get {
-                val players = PlayerRepository.getAllPlayers()
-                call.respond(players)
+                try {
+                    val players = PlayerRepository.getAllPlayers()
+                    call.respond(players)
+                } catch (e: Exception) {
+                    call.respond(mapOf("error" to "Failed to get players: ${e.message}"))
+                }
             }
 
+            // Создать нового игрока
             post {
                 try {
-                    val data = call.receive<Map<String, String>>()
-                    val name = data["name"] ?: ""
+                    val request = call.receive<Map<String, Any>>()
+                    val name = request["name"]?.toString() ?: ""
 
                     if (name.isBlank()) {
-                        call.respond(mapOf("error" to "Name is required"))
+                        call.respond(mapOf("error" to "Player name is required"))
+                        return@post
+                    }
+
+                    if (name.length > 100) {
+                        call.respond(mapOf("error" to "Player name too long (max 100 chars)"))
                         return@post
                     }
 
                     val player = PlayerRepository.createPlayer(name)
                     call.respond(player)
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to "Invalid request: ${e.message}"))
+                    call.respond(mapOf("error" to "Failed to create player: ${e.message}"))
                 }
             }
 
+            // Добавить деньги игроку
             post("/{id}/add") {
                 try {
                     val id = call.parameters["id"]?.toIntOrNull()
-                    val data = call.receive<Map<String, Int>>()
-                    val amount = data["amount"] ?: 0
+                    val request = call.receive<MoneyRequest>()
 
-                    if (id == null || amount <= 0) {
-                        call.respond(mapOf("error" to "Invalid ID or amount"))
+                    if (id == null) {
+                        call.respond(ApiResponse(success = false, error = "Invalid player ID"))
                         return@post
                     }
 
-                    val success = PlayerRepository.addMoney(id, amount)
-                    call.respond(mapOf("success" to success))
+                    if (request.amount <= 0) {
+                        call.respond(ApiResponse(success = false, error = "Amount must be positive"))
+                        return@post
+                    }
+
+                    val success = PlayerRepository.addMoney(id, request.amount)
+                    call.respond(ApiResponse(success = success))
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to e.message.toString()))
+                    call.respond(ApiResponse(success = false, error = "Failed to add money: ${e.message}"))
                 }
             }
 
+            // Снять деньги у игрока
             post("/{id}/subtract") {
                 try {
                     val id = call.parameters["id"]?.toIntOrNull()
-                    val data = call.receive<Map<String, Int>>()
-                    val amount = data["amount"] ?: 0
+                    val request = call.receive<MoneyRequest>()
 
-                    if (id == null || amount <= 0) {
-                        call.respond(mapOf("error" to "Invalid ID or amount"))
+                    if (id == null) {
+                        call.respond(ApiResponse(success = false, error = "Invalid player ID"))
                         return@post
                     }
 
-                    val success = PlayerRepository.subtractMoney(id, amount)
-                    call.respond(mapOf("success" to success))
+                    if (request.amount <= 0) {
+                        call.respond(ApiResponse(success = false, error = "Amount must be positive"))
+                        return@post
+                    }
+
+                    val success = PlayerRepository.subtractMoney(id, request.amount)
+                    call.respond(ApiResponse(success = success))
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to e.message.toString()))
+                    call.respond(ApiResponse(success = false, error = "Failed to subtract money: ${e.message}"))
                 }
             }
 
+            // Удалить игрока
             delete("/{id}") {
                 try {
                     val id = call.parameters["id"]?.toIntOrNull()
+
                     if (id == null) {
-                        call.respond(mapOf("error" to "Invalid ID"))
+                        call.respond(ApiResponse(success = false, error = "Invalid player ID"))
                         return@delete
                     }
 
                     val success = PlayerRepository.deletePlayer(id)
-                    call.respond(mapOf("success" to success))
+                    call.respond(ApiResponse(success = success))
                 } catch (e: Exception) {
-                    call.respond(mapOf("error" to e.message.toString()))
+                    call.respond(ApiResponse(success = false, error = "Failed to delete player: ${e.message}"))
                 }
             }
         }
