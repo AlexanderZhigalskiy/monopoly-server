@@ -1,8 +1,12 @@
-FROM eclipse-temurin:17-jdk-alpine
+# Этап сборки
+FROM gradle:7.6-jdk17-alpine AS builder
 WORKDIR /app
 COPY . .
-RUN chmod +x gradlew
-RUN ./gradlew build -x test --no-daemon
-RUN find . -name "*.jar" -type f | head -1 | xargs -I {} cp {} app.jar
+RUN gradle build -x test --no-daemon
+
+# Этап запуска
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=builder /app/build/libs/*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
