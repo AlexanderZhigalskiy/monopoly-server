@@ -14,36 +14,47 @@ import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.*
 
-// Модель транзакции (сохраняется на сервере)
+// Модель транзакции
 @Serializable
 data class Transaction(
     val id: Int,
     val playerId: Int,
-    val amount: String,  // "+100", "-50", "=500"
+    val amount: String,
     val description: String,
-    val date: String
+    val date: String,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
-// Модель игрока с историей
+// Модель игрока с timestamp
 @Serializable
 data class Player(
     val id: Int,
     val name: String,
     var balance: Int = 0,
-    val createdAt: String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
+    val createdAt: String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date()),
+    var lastUpdated: Long = System.currentTimeMillis()
 )
 
-// Запрос для создания игрока
+// Для синхронизации - данные об обновлениях
 @Serializable
-data class PlayerCreateRequest(
-    val name: String
+data class SyncData(
+    val players: List<Player>,
+    val transactions: List<Transaction>,
+    val serverTimestamp: Long = System.currentTimeMillis()
 )
 
-// Запрос для операций с деньгами
+@Serializable
+data class SyncRequest(
+    val lastSyncTimestamp: Long = 0,
+    val knownPlayerIds: List<Int> = emptyList()
+)
+
+@Serializable
+data class PlayerCreateRequest(val name: String)
+
 @Serializable
 data class MoneyRequest(val amount: Int)
 
-// Ответ сервера
 @Serializable
 data class SimpleResponse(
     val success: Boolean,
@@ -51,7 +62,7 @@ data class SimpleResponse(
     val error: String? = null
 )
 
-// Расширенное "хранилище" в оперативной памяти
+// Расширенное хранилище
 object Game {
     private val players = mutableListOf<Player>()
     private val transactions = mutableListOf<Transaction>()
@@ -63,11 +74,14 @@ object Game {
     // Игроки
     fun getAllPlayers(): List<Player> = players.toList()
 
+    fun getPlayersUpdatedSince(timestamp: Long): List<Player> {
+        return players.filter { it.lastUpdated > timestamp }
+    }
+
     fun addPlayer(name: String): Player {
         val newPlayer = Player(id = nextPlayerId++, name = name)
         players.add(newPlayer)
 
-        // Создаем начальную транзакцию
         addTransaction(
             playerId = newPlayer.id,
             amount = "=0",
@@ -82,8 +96,8 @@ object Game {
         return player?.let {
             if (it.balance + delta >= 0) {
                 it.balance += delta
+                it.lastUpdated = System.currentTimeMillis()
 
-                // Добавляем транзакцию
                 addTransaction(
                     playerId = playerId,
                     amount = if (delta >= 0) "+$delta" else "$delta",
@@ -105,8 +119,8 @@ object Game {
             if (newBalance >= 0) {
                 val oldBalance = it.balance
                 it.balance = newBalance
+                it.lastUpdated = System.currentTimeMillis()
 
-                // Добавляем транзакцию
                 addTransaction(
                     playerId = playerId,
                     amount = "=$newBalance",
@@ -121,7 +135,6 @@ object Game {
     }
 
     fun deletePlayer(playerId: Int): Boolean {
-        // Удаляем все транзакции игрока
         transactions.removeIf { it.playerId == playerId }
         return players.removeIf { it.id == playerId }
     }
@@ -148,17 +161,50 @@ object Game {
     fun getPlayerTransactions(playerId: Int): List<Transaction> {
         return transactions
             .filter { it.playerId == playerId }
-            .sortedByDescending { it.id } // Новые сверху
-            .take(20) // Ограничиваем для клиента
+            .sortedByDescending { it.id }
+            .take(20)
+    }
+
+    fun getTransactionsUpdatedSince(timestamp: Long): List<Transaction> {
+        return transactions.filter { it.timestamp > timestamp }
     }
 
     fun getAllTransactions(): List<Transaction> {
-        return transactions.sortedByDescending { it.id }
+        return transactions.toList()
     }
 
-    // Получение игрока по ID
     fun getPlayer(playerId: Int): Player? {
         return players.find { it.id == playerId }
+    }
+
+    // Синхронизация
+    fun getSyncData(lastSyncTimestamp: Long, knownPlayerIds: List<Int>): SyncData {
+        // Получаем обновленных игроков
+        val updatedPlayers = if (lastSyncTimestamp > 0) {
+            players.filter { it.lastUpdated > lastSyncTimestamp }
+        } else {
+            players // При первой синхронизации отправляем всех
+        }
+
+        // Получаем новые транзакции
+        val newTransactions = if (lastSyncTimestamp > 0) {
+            transactions.filter { it.timestamp > lastSyncTimestamp }
+        } else {
+            transactions
+        }
+
+        // Фильтруем транзакции только для известных игроков
+        val filteredTransactions = if (knownPlayerIds.isNotEmpty()) {
+            newTransactions.filter { it.playerId in knownPlayerIds }
+        } else {
+            newTransactions
+        }
+
+        return SyncData(
+            players = updatedPlayers,
+            transactions = filteredTransactions,
+            serverTimestamp = System.currentTimeMillis()
+        )
     }
 }
 
@@ -189,7 +235,8 @@ fun main() {
                 call.respond(mapOf(
                     "status" to "OK",
                     "players" to Game.getAllPlayers().size,
-                    "transactions" to Game.getAllTransactions().size
+                    "transactions" to Game.getAllTransactions().size,
+                    "serverTime" to System.currentTimeMillis()
                 ))
             }
 
@@ -220,7 +267,6 @@ fun main() {
                     }
                 }
 
-                // Получить историю транзакций игрока
                 get("/{id}/history") {
                     try {
                         val playerId = call.parameters["id"]?.toIntOrNull()
@@ -307,13 +353,27 @@ fun main() {
                 }
             }
 
-            // Получить все транзакции (для администрирования)
+            // Получить все транзакции
             get("/transactions") {
                 try {
                     val allTransactions = Game.getAllTransactions()
                     call.respond(allTransactions)
                 } catch (e: Exception) {
                     call.respond(SimpleResponse(false, error = "Error getting transactions: ${e.message}"))
+                }
+            }
+
+            // Синхронизация - основной endpoint
+            post("/sync") {
+                try {
+                    val request = call.receive<SyncRequest>()
+                    val syncData = Game.getSyncData(
+                        lastSyncTimestamp = request.lastSyncTimestamp,
+                        knownPlayerIds = request.knownPlayerIds
+                    )
+                    call.respond(syncData)
+                } catch (e: Exception) {
+                    call.respond(SimpleResponse(false, error = "Error during sync: ${e.message}"))
                 }
             }
         }
