@@ -25,11 +25,11 @@ data class Transaction(
     val timestamp: Long = System.currentTimeMillis()
 )
 
-// Модель игрока с timestamp
+// Модель игрока с timestamp - ИСПРАВЛЕНО: name должен быть var для изменения
 @Serializable
 data class Player(
     val id: Int,
-    val name: String,
+    var name: String,  // ИЗМЕНЕНО: с val на var
     var balance: Int = 0,
     val createdAt: String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date()),
     var lastUpdated: Long = System.currentTimeMillis()
@@ -48,6 +48,9 @@ data class SyncRequest(
     val lastSyncTimestamp: Long = 0,
     val knownPlayerIds: List<Int> = emptyList()
 )
+
+@Serializable
+data class PlayerNameRequest(val name: String)
 
 @Serializable
 data class PlayerCreateRequest(val name: String)
@@ -139,7 +142,7 @@ object Game {
         return players.removeIf { it.id == playerId }
     }
 
-    // Транзакции
+    // Транзакции - ИЗМЕНЕНО: сделаем метод public или добавим публичный метод
     private fun addTransaction(playerId: Int, amount: String, description: String) {
         val transaction = Transaction(
             id = nextTransactionId++,
@@ -156,6 +159,15 @@ object Game {
             val toRemove = playerTransactions.sortedBy { it.id }.take(playerTransactions.size - 50)
             transactions.removeAll(toRemove.toSet())
         }
+    }
+
+    // НОВЫЙ метод: публичный для добавления транзакций с изменением имени
+    fun addNameChangeTransaction(playerId: Int, oldName: String, newName: String) {
+        addTransaction(
+            playerId = playerId,
+            amount = "~",
+            description = "Name changed from '$oldName' to '$newName'"
+        )
     }
 
     fun getPlayerTransactions(playerId: Int): List<Transaction> {
@@ -175,6 +187,19 @@ object Game {
 
     fun getPlayer(playerId: Int): Player? {
         return players.find { it.id == playerId }
+    }
+
+    // Метод для обновления имени игрока
+    fun updatePlayerName(playerId: Int, newName: String): Boolean {
+        val player = players.find { it.id == playerId }
+        return player?.let {
+            val oldName = it.name
+            it.name = newName
+            it.lastUpdated = System.currentTimeMillis()
+
+            addNameChangeTransaction(playerId, oldName, newName)
+            true
+        } ?: false
     }
 
     // Синхронизация
@@ -205,6 +230,12 @@ object Game {
             transactions = filteredTransactions,
             serverTimestamp = System.currentTimeMillis()
         )
+    }
+
+    // Метод для быстрой проверки изменений
+    fun hasChangesSince(lastCheck: Long): Boolean {
+        return players.any { it.lastUpdated > lastCheck } ||
+                transactions.any { it.timestamp > lastCheck }
     }
 }
 
@@ -265,17 +296,6 @@ fun main() {
                     } catch (e: Exception) {
                         call.respond(SimpleResponse(false, error = "Error creating player: ${e.message}"))
                     }
-                }
-                // В routing добавьте:
-                get("/changes") {
-                    val lastCheck = call.request.queryParameters["lastCheck"]?.toLongOrNull() ?: 0
-                    val hasChanges = Game.getAllPlayers().any { it.lastUpdated > lastCheck } ||
-                            Game.getAllTransactions().any { it.timestamp > lastCheck }
-
-                    call.respond(mapOf(
-                        "hasChanges" to hasChanges,
-                        "serverTime" to System.currentTimeMillis()
-                    ))
                 }
 
                 get("/{id}/history") {
@@ -347,6 +367,30 @@ fun main() {
                     }
                 }
 
+                put("/{id}/name") {
+                    try {
+                        val playerId = call.parameters["id"]?.toIntOrNull()
+                        val request = call.receive<PlayerNameRequest>()
+                        val newName = request.name.trim()
+
+                        if (playerId == null || newName.isEmpty()) {
+                            call.respond(SimpleResponse(false, error = "Invalid request: name cannot be empty"))
+                            return@put
+                        }
+
+                        if (newName.length > 50) {
+                            call.respond(SimpleResponse(false, error = "Player name too long (max 50 characters)"))
+                            return@put
+                        }
+
+                        val success = Game.updatePlayerName(playerId, newName)
+                        call.respond(SimpleResponse(success,
+                            if (success) "Name updated successfully" else "Player not found"))
+                    } catch (e: Exception) {
+                        call.respond(SimpleResponse(false, error = "Error updating name: ${e.message}"))
+                    }
+                }
+
                 delete("/{id}") {
                     try {
                         val playerId = call.parameters["id"]?.toIntOrNull()
@@ -371,6 +415,21 @@ fun main() {
                     call.respond(allTransactions)
                 } catch (e: Exception) {
                     call.respond(SimpleResponse(false, error = "Error getting transactions: ${e.message}"))
+                }
+            }
+
+            // Endpoint для быстрой проверки изменений
+            get("/changes") {
+                try {
+                    val lastCheck = call.request.queryParameters["lastCheck"]?.toLongOrNull() ?: 0
+                    val hasChanges = Game.hasChangesSince(lastCheck)
+
+                    call.respond(mapOf(
+                        "hasChanges" to hasChanges,
+                        "serverTime" to System.currentTimeMillis()
+                    ))
+                } catch (e: Exception) {
+                    call.respond(SimpleResponse(false, error = "Error checking changes: ${e.message}"))
                 }
             }
 
