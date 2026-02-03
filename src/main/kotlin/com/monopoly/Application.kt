@@ -266,6 +266,17 @@ fun main() {
                         call.respond(SimpleResponse(false, error = "Error creating player: ${e.message}"))
                     }
                 }
+                // В routing добавьте:
+                get("/changes") {
+                    val lastCheck = call.request.queryParameters["lastCheck"]?.toLongOrNull() ?: 0
+                    val hasChanges = Game.getAllPlayers().any { it.lastUpdated > lastCheck } ||
+                            Game.getAllTransactions().any { it.timestamp > lastCheck }
+
+                    call.respond(mapOf(
+                        "hasChanges" to hasChanges,
+                        "serverTime" to System.currentTimeMillis()
+                    ))
+                }
 
                 get("/{id}/history") {
                     try {
